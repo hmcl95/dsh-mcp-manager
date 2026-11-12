@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -104,7 +104,8 @@ function mount(t, config, extraRegistry = []) {
     logger: { info() {}, warn() {}, error() {} }, tools: registry,
     get: name => name === 'workspaceRegistry' ? { list: () => [{ path: dir }, ...extraRegistry.map(path => ({ path }))] } : undefined,
     on: () => () => {}, effect,
-    inject: (names, callback) => { callback({ agents, webServer, effect }); return { dispose() {} }; },
+    inject: (names, callback) => { callback({ agents, webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, effect }); return { dispose() {} }; },
   };
   apply(ctx);
   let disposed = false;
@@ -355,4 +356,208 @@ it('closes a failed SSE handshake before retrying it', async t => {
   assert.equal(remote.streams(), 1);
   h.dispose();
   await until(() => remote.streams() === 0);
+});
+
+
+it('requires explicit approval before discovering or manually connecting workspace stdio', async t => {
+  const marker = join(scratch, 'stdio-unapproved.marker');
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const h = mount(t, {
+    local: { type: 'stdio', command: process.execPath, args: [fixture, marker], cwd: scratch }
+  });
+
+  await h.attach();
+
+  const discovered = await h.view();
+  assert.equal(discovered.status, 'approval-required');
+  assert.equal(existsSync(marker), false);
+
+  const manual = await h.request('POST', `/servers/${discovered.id}/connect`);
+  assert.equal(manual.code, 200);
+  assert.equal(manual.server.status, 'approval-required');
+  assert.equal(existsSync(marker), false);
+});
+
+
+it('passes only allowlisted inherited environment variables to approved workspace stdio', async t => {
+  const marker = join(scratch, 'stdio-environment.marker');
+  const previous = process.env.DSH_MM_PARENT_SECRET;
+  process.env.DSH_MM_PARENT_SECRET = 'must-not-be-inherited';
+  t.after(() => {
+    if (previous === undefined) delete process.env.DSH_MM_PARENT_SECRET;
+    else process.env.DSH_MM_PARENT_SECRET = previous;
+  });
+
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const h = mount(t, {
+    local: {
+      type: 'stdio',
+      command: process.execPath,
+      args: [fixture, marker],
+      cwd: scratch,
+      env: { DSH_MM_EXPLICIT_VALUE: 'explicitly-approved' }
+    }
+  });
+
+  await h.attach();
+  const discovered = await h.view();
+  assert.equal(discovered.status, 'approval-required');
+
+  const approved = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(approved.status, 'connected');
+  assert.ok(existsSync(marker));
+
+  const childEnv = JSON.parse(readFileSync(marker, 'utf8'));
+  assert.equal(childEnv.inheritedSecret, undefined);
+  assert.equal(childEnv.explicitValue, 'explicitly-approved');
+  assert.equal(childEnv.hasPath, true);
+});
+
+it('rejects stdio approval when the config changes after discovery', async t => {
+  const firstMarker = join(scratch, 'stdio-stale-approval-first.marker');
+  const secondMarker = join(scratch, 'stdio-stale-approval-second.marker');
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const makeConfig = marker => ({
+    local: { type: 'stdio', command: process.execPath, args: [fixture, marker], cwd: scratch }
+  });
+  const h = mount(t, makeConfig(firstMarker));
+  await h.attach();
+
+  assert.equal((await h.view()).status, 'approval-required');
+  h.write(makeConfig(secondMarker));
+
+  const staleApproval = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(staleApproval.code, 409);
+  assert.equal(existsSync(firstMarker), false);
+  assert.equal(existsSync(secondMarker), false);
+  assert.equal((await h.view()).status, 'approval-required');
+
+  const approved = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(approved.code, 200);
+  assert.equal(approved.status, 'connected');
+  assert.equal(existsSync(secondMarker), true);
+});
+
+it('removes stdio trust on deletion so re-adding requires approval', async t => {
+  const firstMarker = join(scratch, 'stdio-delete-first.marker');
+  const secondMarker = join(scratch, 'stdio-delete-second.marker');
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const makeConfig = marker => ({
+    local: { type: 'stdio', command: process.execPath, args: [fixture, marker], cwd: scratch }
+  });
+  const h = mount(t, makeConfig(firstMarker));
+  await h.attach();
+
+  const approved = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(approved.code, 200);
+  assert.equal(existsSync(firstMarker), true);
+
+  const statePath = join(scratch, '.dsh/mcp-manager.json');
+  const approvalKey = `${realpathSync(h.dir)}\nlocal`;
+  assert.ok(JSON.parse(readFileSync(statePath, 'utf8')).workspaceStdioApprovals[approvalKey]);
+
+  const removed = await h.request('POST', '/workspaces/servers/delete', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(removed.code, 200);
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).workspaceStdioApprovals[approvalKey], undefined);
+
+  h.write(makeConfig(secondMarker));
+  await h.rescan();
+  assert.equal((await h.view()).status, 'approval-required');
+  assert.equal(existsSync(secondMarker), false);
+});
+
+it('starts workspace stdio only after trust and invalidates trust when its execution config changes', async t => {
+  const firstMarker = join(scratch, 'stdio-approved-first.marker');
+  const secondMarker = join(scratch, 'stdio-approved-second.marker');
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const makeConfig = marker => ({
+    local: { type: 'stdio', command: process.execPath, args: [fixture, marker], cwd: scratch }
+  });
+  const h = mount(t, makeConfig(firstMarker));
+
+  await h.attach();
+  const discovered = await h.view();
+  assert.equal(discovered.status, 'approval-required');
+  assert.equal(existsSync(firstMarker), false);
+
+  const approved = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(approved.code, 200);
+  assert.equal(approved.status, 'connected');
+  assert.equal(existsSync(firstMarker), true);
+
+  h.write(makeConfig(secondMarker));
+  await h.rescan();
+
+  const changed = await h.view();
+  assert.equal(changed.status, 'approval-required');
+  assert.equal(existsSync(secondMarker), false);
+
+  const manual = await h.request('POST', `/servers/${changed.id}/connect`);
+  assert.equal(manual.code, 200);
+  assert.equal(manual.server.status, 'approval-required');
+  assert.equal(existsSync(secondMarker), false);
+
+  const reapproved = await h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+  assert.equal(reapproved.code, 200);
+  assert.equal(reapproved.status, 'connected');
+  assert.equal(existsSync(secondMarker), true);
+});
+
+
+it('does not publish workspace stdio if its config changes during startup', async t => {
+  const firstMarker = join(scratch, 'stdio-startup-race-first.marker');
+  const secondMarker = join(scratch, 'stdio-startup-race-second.marker');
+  const fixture = join(process.cwd(), 'fixtures/stdio-trust-mcp.mjs');
+  const makeConfig = marker => ({
+    local: {
+      type: 'stdio',
+      command: process.execPath,
+      args: [fixture, marker, '1800'],
+      cwd: scratch
+    }
+  });
+
+  const h = mount(t, makeConfig(firstMarker));
+  await h.attach();
+  assert.equal((await h.view()).status, 'approval-required');
+
+  const approvalPromise = h.request('POST', '/workspaces/servers/trust', {
+    path: h.dir, name: 'local'
+  });
+
+  await until(() => existsSync(firstMarker));
+  h.write(makeConfig(secondMarker));
+
+  const approval = await approvalPromise;
+  assert.equal(approval.code, 200);
+  await until(async () => (await h.view()).status !== 'connecting');
+  const finalState = await h.view();
+  assert.equal(finalState.status, 'approval-required');
+  assert.equal(finalState.toolCount, 0);
+  assert.equal(existsSync(secondMarker), false);
+
+  const { pid } = JSON.parse(readFileSync(firstMarker, 'utf8'));
+  await until(() => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      throw error;
+    }
+  });
 });

@@ -31,7 +31,8 @@ const { apply } = await import('../lib/index.js');
 const testDisposers = [];
 beforeEach(() => writeFileSync(statePath, JSON.stringify({ servers: [] })));
 afterEach(() => { for (const dispose of testDisposers.splice(0).reverse()) dispose(); });
-function makeCtx(config) {
+function makeCtx(config, connectionRejection = undefined) {
+  const connection = { requestRejection: () => connectionRejection };
   const routes = [];
   const cleanup = [];
   const effect = fn => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); return () => {}; };
@@ -45,6 +46,8 @@ function makeCtx(config) {
       if (typeof callback === 'function' && names.includes('webServer')) {
         callback({
           webServer: ctx.webServer,
+          connection,
+          reflect: { get: (name) => name === 'connection' ? connection : undefined },
           get: () => undefined,
           effect,
         });
@@ -56,7 +59,7 @@ function makeCtx(config) {
   apply(ctx, config);
   const dispose = () => { for (const fn of cleanup.splice(0).reverse()) fn(); };
   testDisposers.push(dispose);
-  return { routes, handler: routes[0]?.handler, dispose };
+  return { routes, handler: routes[0]?.handler, dispose, connection };
 }
 
 async function request(handler, method, path, body, headers = {}) {
@@ -439,10 +442,12 @@ it('escapes server-supplied text on the callback page', async (t) => {
   const { handler } = makeCtx();
   const created = await request(handler, 'POST', '/mcp-manager/api/servers', { name: 'xss', type: 'http', url: stub.mcpUrl, authMode: 'oauth' });
   const id = created.json.server.id;
+  const authorizeUrl = await authorize(handler, id);
+  const flowState = authorizeUrl.searchParams.get('state');
 
   // The authorization server answers with an OAuth error, and that text is what
   // the page prints — it must never be parsed as markup on the GUI origin.
-  const callback = await request(handler, 'GET', `/mcp-manager/callback/${id}?error=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E`);
+  const callback = await request(handler, 'GET', `/mcp-manager/callback/${id}?error=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E&state=${encodeURIComponent(flowState)}`);
   assert.ok(!callback.text.includes('<img'), 'markup from the query string must not reach the page');
   assert.match(callback.text, /&lt;img/);
   assert.match(callback.text, /Authorization failed/);

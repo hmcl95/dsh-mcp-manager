@@ -66,5 +66,9 @@
         "web"
       ]
     }
+  },
+  "dependencies": {
+    "ipaddr.js": "2.5.0",
+    "undici": "7.30.1"
   }
 }

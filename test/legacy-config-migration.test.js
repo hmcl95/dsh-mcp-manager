@@ -104,6 +104,12 @@ describe('quoteWindowsToken (cmd.exe command line)', () => {
     assert.equal(quoteWindowsToken('say "hi"'), '"say \\"hi\\""');
   });
 
+  it('rejects cmd.exe control characters', () => {
+    for (const token of ['a&b', 'a|b', '%PATH%', 'a^b', 'a!b', 'a(b)', 'a<b', 'a>b', 'a\nb']) {
+      assert.throws(() => quoteWindowsToken(token), /cmd\.exe control characters/);
+    }
+  });
+
   it('produces the command line the issue reporter verified', () => {
     const command = quoteWindowsToken('C:\\path with space\\server.exe');
     const args = ['--flag', 'a b', 'plain'].map(quoteWindowsToken);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, it } from 'node:test';
-import { startTimeoutMcp } from './fixtures/timeout-mcp.mjs';
+import { startTimeoutMcp } from '../fixtures/timeout-mcp.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-mm-timeouts-'));
 process.env.HOME = scratch;
@@ -14,7 +14,7 @@ mkdirSync(process.env.DSH_HOME);
 const statePath = join(process.env.DSH_HOME, 'mcp-manager.json');
 const mod = await import('../lib/index.js');
 after(() => rmSync(scratch, { recursive: true, force: true }));
-const fixture = fileURLToPath(new URL('./fixtures/timeout-mcp.mjs', import.meta.url));
+const fixture = fileURLToPath(new URL('../fixtures/timeout-mcp.mjs', import.meta.url));
 
 function mount(t, config = {}) {
   writeFileSync(statePath, JSON.stringify({ servers: [] }));
@@ -34,7 +34,8 @@ function mount(t, config = {}) {
     logger: { info() {}, warn() {}, error() {} }, tools: registry,
     get: name => name === 'workspaceRegistry' ? { list: () => [{ path: workspace }] } : undefined,
     on: () => () => {}, effect,
-    inject: (names, callback) => { callback({ agents, webServer, effect }); return { dispose() {} }; },
+    inject: (names, callback) => { callback({ agents, webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, effect }); return { dispose() {} }; },
   }, config);
   t.after(() => { for (const fn of cleanup.reverse()) fn(); });
   const request = async (method, path, body) => {
@@ -47,6 +48,10 @@ function mount(t, config = {}) {
   const connect = async body => {
     const created = await request('POST', '/servers', body);
     assert.equal(created.status, 201);
+    if (body.type === 'stdio') {
+      const approved = await request('POST', `/servers/${created.server.id}/trust`);
+      assert.equal(approved.status, 200, approved.error);
+    }
     const connected = await request('POST', `/servers/${created.server.id}/connect`);
     assert.equal(connected.server.status, 'connected', connected.server.error);
     return connected.server;
@@ -129,6 +134,34 @@ for (const transport of ['http', 'sse', 'stdio']) {
     if (transport === 'sse') {
       await assert.rejects(h.tools.get('mcp__sse__wait').execute({ holdPost: true }), /timeout.*1000ms/i);
     }
+  });
+}
+
+
+for (const transport of ['http', 'sse']) {
+  it(`${transport} aborts an in-flight POST when the server is disconnected`, { timeout: 8000 }, async t => {
+    const remote = await startTimeoutMcp({ sse: transport === 'sse' });
+    t.after(remote.close);
+    const h = mount(t, { toolCallTimeoutMs: 10000 });
+    const server = await h.connect({
+      name: `cancel_${transport}`,
+      type: 'http',
+      url: remote.url,
+      authMode: 'none',
+    });
+
+    const pending = h.tools.get(`mcp__cancel_${transport}__wait`).execute({ holdPost: true });
+    const outcome = pending.then(
+      value => ({ value }),
+      error => ({ error }),
+    );
+    await remote.heldPostStarted;
+
+    const disabled = await h.request('POST', `/servers/${server.id}/enabled`, { enabled: false });
+    assert.equal(disabled.status, 200);
+    await remote.heldPostClosed;
+    const result = await outcome;
+    assert.ok(result.error, 'the in-flight tool call should reject after disconnect');
   });
 }
 

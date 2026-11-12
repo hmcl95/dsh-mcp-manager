@@ -101,7 +101,8 @@ function mount(t) {
     get: name => name === 'workspaceRegistry' ? { list: () => [...workspaces.keys()].map(path => ({ path })) } : undefined,
     on: () => () => {},
     effect,
-    inject: (names, callback) => { callback({ agents, webServer, effect }); return { dispose() {} }; },
+    inject: (names, callback) => { callback({ agents, webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, effect }); return { dispose() {} }; },
   };
   writeFileSync(join(stateDir, 'mcp-manager.json'), JSON.stringify({ servers: [] }));
   apply(ctx);

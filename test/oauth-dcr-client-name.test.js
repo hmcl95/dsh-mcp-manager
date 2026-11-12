@@ -38,6 +38,32 @@ beforeEach(() => writeFileSync(statePath, JSON.stringify({ servers: [] })));
 afterEach(() => { for (const dispose of testDisposers.splice(0).reverse()) dispose(); });
 
 /** Minimal ctx: the mounted API route plus effect cleanup for the plugin. */
+it('starts with an empty state when the state file is missing', () => {
+  rmSync(statePath);
+  assert.doesNotThrow(() => makeCtx());
+});
+
+it('rejects malformed state without overwriting the file', () => {
+  const malformed = '{"servers": [';
+  writeFileSync(statePath, malformed);
+  assert.throws(() => makeCtx(), /Could not load MCP Manager state file/);
+  assert.equal(readFileSync(statePath, 'utf8'), malformed);
+});
+
+it('surfaces state-file read errors instead of treating them as an empty state', () => {
+  rmSync(statePath);
+  mkdirSync(statePath);
+  try {
+    assert.throws(
+      () => makeCtx(),
+      (error) => error.cause?.code === 'EISDIR'
+        && /Could not load MCP Manager state file/.test(error.message)
+    );
+  } finally {
+    rmSync(statePath, { recursive: true, force: true });
+  }
+});
+
 function makeCtx(config = {}, { registry = null } = {}) {
   const routes = [];
   const cleanup = [];
@@ -51,7 +77,8 @@ function makeCtx(config = {}, { registry = null } = {}) {
     on: () => () => {},
     inject: (names, callback) => {
       if (typeof callback === 'function' && names.includes('webServer')) {
-        callback({ webServer, get: ctx.get, effect });
+        callback({ webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, get: ctx.get, effect });
       }
       return { dispose: () => {} };
     },

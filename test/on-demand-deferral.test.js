@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, it } from 'node:test';
-import { startTimeoutMcp } from './fixtures/timeout-mcp.mjs';
+import { startTimeoutMcp } from '../fixtures/timeout-mcp.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-mm-deferral-'));
 process.env.HOME = scratch;
@@ -56,7 +56,8 @@ function mount(t, initialState, seed = [], executeShape = 'batch') {
     get: () => undefined,
     on: (event, fn, options) => { hooks.push({ event, fn, options }); return () => {}; },
     effect,
-    inject: (names, callback) => { callback({ agents, webServer, effect }); return { dispose() {} }; },
+    inject: (names, callback) => { callback({ agents, webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, effect }); return { dispose() {} }; },
   }, {});
   t.after(() => { for (const fn of cleanup.reverse()) { try { fn(); } catch {} } });
 

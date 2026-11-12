@@ -41,7 +41,8 @@ function makeCtx(config) {
     on: () => () => {},
     inject: (names, callback) => {
       if (typeof callback === 'function' && names.includes('webServer')) {
-        callback({ webServer: ctx.webServer, get: () => undefined, effect });
+        callback({ webServer: ctx.webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, get: () => undefined, effect });
       }
       return { dispose: () => {} };
     },

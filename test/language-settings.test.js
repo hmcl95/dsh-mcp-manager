@@ -28,6 +28,8 @@ function makeCtx() {
       if (typeof callback === 'function' && names.includes('webServer')) {
         callback({
           webServer: ctx.webServer,
+          connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined },
           get: () => undefined,
           effect: (fn) => { const dispose = fn(); return () => { if (typeof dispose === 'function') dispose(); }; },
         });

@@ -13,7 +13,7 @@ const version = JSON.parse(readFileSync(join(runtime, 'node_modules/@deepseek-ai
 assert.equal(version, '0.2.1-rc.2');
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-mm-timeout-real-'));
 const workspace = join(scratch, 'workspace'); mkdirSync(workspace);
-const fixtureUrl = new URL('../test/fixtures/timeout-mcp.mjs', import.meta.url).href;
+const fixtureUrl = new URL('../fixtures/timeout-mcp.mjs', import.meta.url).href;
 const verifier = join(scratch, 'verify.mjs');
 const expected = readFileSync(new URL('../test/fixtures/tool-timeout.snapshot.json', import.meta.url), 'utf8');
 writeFileSync(verifier, readFileSync(new URL('./fixtures/timeout-dsh-verifier.mjs', import.meta.url), 'utf8')

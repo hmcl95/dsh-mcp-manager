@@ -21,7 +21,7 @@ const { apply } = await import('../lib/index.js');
 after(() => rmSync(scratchHome, { recursive: true, force: true }));
 
 /** Minimal ctx: enough for apply() to mount its route without a real harness. */
-function makeCtx({ workspacePath } = {}) {
+function makeCtx({ workspacePath, connectionAvailable = true } = {}) {
   const routes = [];
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
@@ -37,6 +37,8 @@ function makeCtx({ workspacePath } = {}) {
       if (typeof callback === 'function' && names.includes('webServer')) {
         callback({
           webServer: ctx.webServer,
+          connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' && connectionAvailable ? { requestRejection: () => undefined } : undefined },
           get: () => undefined,
           effect: (fn) => { const dispose = fn(); return () => { if (typeof dispose === 'function') dispose(); }; },
         });
@@ -109,6 +111,15 @@ function startStub() {
     });
   });
 }
+
+it('mounts the API when connection is absent and rejects API requests', async () => {
+  const { routes, handler } = makeCtx({ connectionAvailable: false });
+
+  assert.equal(routes.length, 1, 'the web route must mount without the connection service');
+
+  const response = await request(handler, 'GET', '/mcp-manager/api/servers');
+  assert.equal(response.code, 401, 'API requests must fail closed without the connection service');
+});
 
 it('connects an authMode:"none" HTTP server without sending Authorization', async () => {
   const stub = await startStub();

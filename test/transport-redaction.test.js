@@ -95,7 +95,8 @@ async function fixture(t, { phase = 'initialize', status = 400, body = bodies.js
     },
     webServer, get: () => undefined, on: () => () => {}, effect,
     inject(names, callback) {
-      if (names.includes('webServer')) callback({ webServer, get: () => undefined, effect });
+      if (names.includes('webServer')) callback({ webServer, connection: { requestRejection: () => undefined },
+          reflect: { get: (name) => name === 'connection' ? { requestRejection: () => undefined } : undefined }, get: () => undefined, effect });
       return { dispose() {} };
     },
   });

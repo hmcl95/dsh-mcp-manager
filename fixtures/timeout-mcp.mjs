@@ -20,6 +20,10 @@ export async function startTimeoutMcp({ sse = false, handshakeDelay = 0 } = {}) 
   const streams = new Map();
   const timers = new Set();
   let sessions = 0;
+  let heldPostStartedResolve;
+  let heldPostClosedResolve;
+  const heldPostStarted = new Promise(resolve => { heldPostStartedResolve = resolve; });
+  const heldPostClosed = new Promise(resolve => { heldPostClosedResolve = resolve; });
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method === 'GET' && sse) {
@@ -38,7 +42,11 @@ export async function startTimeoutMcp({ sse = false, handshakeDelay = 0 } = {}) 
     for await (const chunk of req) body += chunk;
     const message = JSON.parse(body);
     if (message.id === undefined) { res.writeHead(202); res.end(); return; }
-    if (message.params?.arguments?.holdPost) return;
+    if (message.params?.arguments?.holdPost) {
+      res.once('close', () => heldPostClosedResolve());
+      heldPostStartedResolve();
+      return;
+    }
     if (sse) { res.writeHead(202); res.end(); }
     // Make fixture shutdown cancel long-running replies as well as sockets.
     const delay = message.method === 'tools/call' ? message.params?.arguments?.delayMs ?? 0 : handshakeDelay;
@@ -58,6 +66,8 @@ export async function startTimeoutMcp({ sse = false, handshakeDelay = 0 } = {}) 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return {
     url: `http://127.0.0.1:${server.address().port}/${sse ? 'sse' : 'mcp'}`,
+    heldPostStarted,
+    heldPostClosed,
     close: async () => {
       for (const timer of timers) clearTimeout(timer);
       for (const stream of streams.values()) stream.destroy();
