@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) | English
 
-> Local **0.13.3 unreleased candidate**: see the [release notes](docs/release-v0.13.3.md) for cumulative changes, provenance and verification limits. It supersedes [0.13.2](docs/release-v0.13.2.md).
+> Package version **0.16.2**: see the [release notes](docs/release-v0.16.2.md) for changes, provenance and verification limits.
 
 **MCP server manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness)** — a Settings → MCP page where you add MCP servers once (remote HTTP or local stdio process), authenticate HTTP servers with **OAuth in the browser**, and expose their tools either directly or through a compact on-demand broker.
 

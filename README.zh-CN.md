@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-> 本地 **0.13.3 未发布候选**：累计改动、来源与验收边界见[发行说明](docs/release-v0.13.3.md)；它取代 [0.13.2](docs/release-v0.13.2.md)。
+> 当前包版本为 **0.16.2**：改动、来源与验收边界见[发行说明](docs/release-v0.16.2.md)。
 
 **[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 的 MCP 服务器管理插件** —— 在 设置 → MCP 页签里添加 MCP 服务器（远程 HTTP 或本地 stdio 进程），HTTP 服务器可在 **浏览器里完成 OAuth 登录**，工具既可直接暴露，也可通过紧凑的按需 broker 调用。
 
