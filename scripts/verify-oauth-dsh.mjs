@@ -21,7 +21,7 @@ import { createServer } from 'node:http';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 export const name = 'issue21-verifier';
-export const inject = ['agents', 'agentLoop', 'webServer'];
+export const inject = ['agents', 'agentLoop', 'webServer', 'connection'];
 export function apply(ctx) {
  void (async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -90,14 +90,20 @@ export function apply(ctx) {
   });
   try {
     await new Promise(r=>server.listen(0,'127.0.0.1',r));
-    await until(async()=>ctx.webServer.port && (await fetch(ctx.webServer.getOrigin()+'/mcp-manager/api/ping')).ok);
-    owned=await ctx.agents.create({sessionId:'issue21-isolated',meta:{cwd:${JSON.stringify(workspace)}}});
+    await until(()=>ctx.webServer.port);
     const origin=ctx.webServer.getOrigin();
+    const login=await fetch(ctx.connection.authenticatedUrl(origin),{redirect:'manual'});
+    assert.equal(login.status,303,'DSH browser launch-token exchange');
+    const cookie=login.headers.get('set-cookie')?.split(';',1)[0];
+    assert.ok(cookie,'DSH browser session cookie');
     const api=origin+'/mcp-manager/api';
-    const created=await fetch(api+'/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'local_oauth',type:'http',url:'http://127.0.0.1:'+server.address().port+'/mcp',authMode:'oauth',scope:'synthetic.read'})});
+    const apiFetch=(path,options={})=>fetch(api+path,{...options,headers:{...(options.headers??{}),Cookie:cookie}});
+    await until(async()=>(await apiFetch('/ping')).ok);
+    owned=await ctx.agents.create({sessionId:'issue21-isolated',meta:{cwd:${JSON.stringify(workspace)}}});
+    const created=await apiFetch('/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'local_oauth',type:'http',url:'http://127.0.0.1:'+server.address().port+'/mcp',authMode:'oauth',scope:'synthetic.read'})});
     assert.equal(created.status,201);
     const id=(await created.json()).server.id;
-    const auth=await fetch(api+'/servers/'+id+'/auth',{method:'POST'});
+    const auth=await apiFetch('/servers/'+id+'/auth',{method:'POST'});
     const authBody=await auth.json();
     assert.equal(auth.status,200,JSON.stringify(authBody));
     authUrl=new URL(authBody.authorizeUrl);
@@ -109,7 +115,7 @@ export function apply(ctx) {
     assert.equal(new URL(redirect).origin,origin);
     const callback=await fetch(redirect+'?code=synthetic-code&state='+authUrl.searchParams.get('state'));
     assert.match(await callback.text(),/Authorized/);
-    const view=(await (await fetch(api+'/servers')).json()).servers.find(s=>s.id===id);
+    const view=(await (await apiFetch('/servers')).json()).servers.find(s=>s.id===id);
     assert.equal(view.status,'connected');
     assert.equal(view.toolCount,1);
     await until(()=>owned.agent.ctx.tools.schemas(owned.agent).some(t=>t.name==='mcp__local_oauth__echo'));
@@ -118,16 +124,16 @@ export function apply(ctx) {
     assert.equal(persisted.oauth.tokens.access_token,'synthetic-access');
     assert.equal(exchanges,1);
     assert.equal(registrations,1);
-    const reauth=await fetch(api+'/servers/'+id+'/auth',{method:'POST'});
+    const reauth=await apiFetch('/servers/'+id+'/auth',{method:'POST'});
     assert.equal(reauth.status,200);
     assert.equal(registrations,1);
-    const logs=(await (await fetch(api+'/servers/'+id+'/logs')).json()).logs;
+    const logs=(await (await apiFetch('/servers/'+id+'/logs')).json()).logs;
     for(const phase of ['register','token-exchange','tools/list']) assert.ok(logs.some(l=>l.phase===phase),phase);
     for(const method of ['initialize','notifications/initialized','tools/list']) assert.ok(methods.includes(method),method);
-    const manualCreated=await fetch(api+'/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'manual_oauth',type:'http',url:'http://127.0.0.1:'+server.address().port+'/mcp',authMode:'oauth',clientId:'synthetic-manual-client'})});
+    const manualCreated=await apiFetch('/servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'manual_oauth',type:'http',url:'http://127.0.0.1:'+server.address().port+'/mcp',authMode:'oauth',clientId:'synthetic-manual-client'})});
     assert.equal(manualCreated.status,201);
     const manualId=(await manualCreated.json()).server.id;
-    const manualAuth=await fetch(api+'/servers/'+manualId+'/auth',{method:'POST'});
+    const manualAuth=await apiFetch('/servers/'+manualId+'/auth',{method:'POST'});
     assert.equal(manualAuth.status,200);
     authUrl=new URL((await manualAuth.json()).authorizeUrl);
     redirect=authUrl.searchParams.get('redirect_uri');
@@ -136,7 +142,7 @@ export function apply(ctx) {
     assert.match(await manualCallback.text(),/Authorized/);
     assert.equal(registrations,1,'manual clients must skip dynamic registration');
     liveBearer=syntheticExpiredAccess;
-    const manualReconnect=await fetch(api+'/servers/'+manualId+'/connect',{method:'POST'});
+    const manualReconnect=await apiFetch('/servers/'+manualId+'/connect',{method:'POST'});
     assert.equal(manualReconnect.status,200);
     const manualView=(await manualReconnect.json()).server;
     assert.equal(manualView.status,'connected');
